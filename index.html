@@ -1126,13 +1126,13 @@
     </div>
   </section>
 
-  <section class="card">
+ <section class="card">
     <div class="card-head">
       <div><p class="eyebrow">Step 4</p><h2>Regression diagnostics</h2></div>
     </div>
     <div id="regDiagRows"></div>
     <p class="norm-note" style="margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);">
-      <b style="color:var(--ink);">Why these tests —</b> linear regression's significance tests additionally assume the residuals (actual − predicted) are normally distributed and have constant variance across X (homoscedasticity). Residual normality is checked with Shapiro–Wilk again, this time on the residuals. Constant variance is checked with the Breusch–Pagan test: it regresses the squared residuals on X and tests whether that explains a significant share of their variance (via n·R², a chi-squared statistic with 1 df) — a significant result (p &lt; 0.05) means the spread of residuals changes across X, so standard errors on the slope may be misleading.
+      <b style="color:var(--ink);">Why these tests —</b> linear regression's significance tests additionally assume the residuals (actual − predicted) are normally distributed and have constant variance across X (homoscedasticity). Residual normality is checked with Shapiro–Wilk again, this time on the residuals. Constant variance is checked with a single-predictor Breusch–Pagan diagnostic: it regresses the squared residuals on X and tests whether that explains a significant share of their variance (via n·R², a chi-squared statistic with 1 df) — a significant result (p &lt; 0.05) means the spread of residuals changes across X, so standard errors on the slope may be misleading.
     </p>
   </section>
 
@@ -1590,7 +1590,7 @@
         <p><b>Fitting —</b> both models are fit by Newton–Raphson (equivalent to iteratively reweighted least squares) maximizing the exact log-likelihood over all predictors at once — logistic: Σ[yᵢlog(pᵢ)+(1−yᵢ)log(1−pᵢ)] with pᵢ = 1⁄(1+e<sup>−ηᵢ</sup>); Poisson: Σ[yᵢlog(μᵢ)−μᵢ−log(yᵢ!)] with μᵢ = e<sup>ηᵢ</sup>, where ηᵢ = β₀ + β₁x₁ᵢ + β₂x₂ᵢ + … is the linear predictor. Standard errors come from the observed information matrix (inverse Hessian) at convergence.</p>
         <p><b>How predictor type changes the model —</b> a <b>continuous</b> predictor contributes its raw value as one column of the design matrix, with one coefficient. An <b>ordinal</b> predictor is converted to an equally-spaced numeric score following its category order (typed order, or auto-detected: numeric sort if the categories are already numbers, otherwise the order they first appear) and enters as one column with one coefficient — this assumes the effect of moving up one category is the same size at every step, which is a simplification worth checking against subject-matter knowledge. A <b>nominal</b> predictor with k categories is dummy-coded into k−1 binary columns against a reference category (the first category encountered in the data), so each non-reference level gets its own coefficient, estimated without assuming any order or equal spacing between categories.</p>
         <p><b>Odds ratio / incidence rate ratio / relative risk —</b> for each term, e<sup>β</sup> — the multiplicative change in odds (logistic), rate (Poisson), or risk (Poisson for binary outcomes) per one-unit increase (continuous or ordinal) or per category vs. the reference (nominal) — with a 95% <b>Wald</b> CI from e<sup>β ± 1.96·SE(β)</sup>. Wald intervals are the conventional choice but are known to be less reliable with sparse data, very large coefficients, or near-separation — the events-per-variable and convergence checks below are the main safeguards against relying on one in exactly those conditions.</p>
-        <p><b>Poisson regression for binary outcomes —</b> logistic regression's odds ratio overstates the relative risk whenever the outcome is common (roughly above 10%), which matters if what you actually want is "how many times more likely," not "how much greater the odds." This option gets around that by fitting the same Poisson log-link model to a 0/1 outcome instead — e<sup>β</sup> is then directly the relative risk. Because a 0/1 outcome doesn't really follow a Poisson distribution (its true variance is p(1−p), not equal to its mean), the model's own standard errors would be wrong if used as-is; this tool corrects for that with a robust "sandwich" (Huber–White) variance estimator instead of the model-based one, which is exactly the standard fix used in the epidemiological literature for this technique (sometimes called "modified Poisson regression," Zou 2004). One known quirk: because the Poisson link has no upper bound, the model can imply a fitted probability above 1 for some observations — this is flagged when it happens, and doesn't invalidate the coefficients, but is worth noting when predictors take extreme values.</p>
+        <p><b>Poisson regression for binary outcomes —</b> logistic regression's odds ratio overstates the relative risk whenever the outcome is common (roughly above 10%), which matters if what you actually want is "how many times more likely," not "how much greater the odds." This option gets around that by fitting the same Poisson log-link model to a 0/1 outcome instead — e<sup>β</sup> is then directly the relative risk. Because a 0/1 outcome doesn't really follow a Poisson distribution (its true variance is p(1−p), not equal to its mean), the model's own standard errors would be wrong if used as-is; this tool corrects for that with a robust "sandwich" (Huber–White) variance estimator instead of the model-based one, which is exactly the standard fix used in the epidemiological literature for this technique (sometimes called "modified Poisson regression," Zou 2004). One known quirk: because the Poisson link has no upper bound, the model can imply a fitted probability above 1 for some observations. This indicates that the Poisson mean model is producing values outside the probability scale; the robust variance estimator may still provide a useful approximation for relative-risk inference, but predictions near or beyond 1 should be treated as a model-diagnostic warning.</p>
         <p><b>Likelihood ratio test —</b> 2×(log-likelihood of this model − log-likelihood of an intercept-only model), compared to a chi-squared distribution with degrees of freedom equal to the number of coefficients added (one per continuous/ordinal predictor, k−1 per nominal predictor with k categories). This tests whether the predictors jointly improve on a model with none of them — it's the recommended overall significance test, more reliable than the per-coefficient Wald z-test when effects are large or samples are small.</p>
         <p><b>McFadden's pseudo-R² —</b> 1 − (log-likelihood of this model ⁄ log-likelihood of the intercept-only model). It doesn't mean the same thing as R² in linear regression — values of 0.2–0.4 are often considered a good fit for this measure, not a low one.</p>
         <p><b>Convergence —</b> if Newton–Raphson doesn't settle within 100 iterations, or a coefficient grows extremely large, that usually means perfect or near-perfect separation (the predictors sort the outcome too cleanly for a finite estimate to exist) — the result is flagged rather than reported as if it were a stable estimate. For Poisson models, the fitted rate e<sup>η</sup> is capped at e<sup>700</sup> internally during fitting purely to keep a runaway iteration's arithmetic finite (so it fails through this same convergence check instead of producing raw <code>Infinity</code>/<code>NaN</code>); it has no effect on any model that actually converges, but it means the coefficients shown for a flagged, non-converged fit come from an already-capped likelihood, not an uncapped one.</p>
@@ -2152,13 +2152,27 @@
     });
   })();
 
+   // Memoized lgamma for non-negative integers — FFH enumeration calls this millions of times
+  // with the same handful of integer arguments (factorials of cell counts and margins), so caching
+  // turns what was a 7-term polynomial evaluation into a single array lookup. Falls back to the
+  // uncached implementation for non-integer or out-of-range x, which the rest of the app uses.
+  var lgammaCache = [0, 0];   // lgamma(0) = log(0!) = 0, lgamma(1) = log(1!) = 0
   function lgamma(x){
+    if (x >= 0 && x < 100000 && Number.isInteger(x)){
+      var cached = lgammaCache[x];
+      if (cached !== undefined) return cached;
+      return (lgammaCache[x] = lgammaUncached(x));
+    }
+    return lgammaUncached(x);
+  }
+
+  function lgammaUncached(x){
     var g = 7;
     var c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
       771.32342877765313, -176.61502916214059, 12.507343278686905,
       -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
     if (x < 0.5){
-      return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+      return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgammaUncached(1 - x);
     }
     x -= 1;
     var a = c[0];
@@ -3426,9 +3440,11 @@
     var v0term = n * (n - 1) * (2 * n + 5);
     var variance;
     if (n > 2){
-      var v1 = (sumT_t1 * sumU_u1) / (2 * n * (n - 1));
-      var v2 = (sumT_t1_t2 * sumU_u1_u2) / (9 * n * (n - 1) * (n - 2));
-      variance = (v0term - vt - vu) / 18 + v1 + v2;
+         // Kendall & Gibbons: v1 uses the (t-1)(t-2)-style products, v2 uses the t(t-1) products.
+    // (These were transposed, which gives correct variance only when at most one variable has ties.)
+    var v1 = (sumT_t1_t2 * sumU_u1_u2) / (9 * n * (n - 1) * (n - 2));
+    var v2 = (sumT_t1 * sumU_u1) / (2 * n * (n - 1));
+    variance = (v0term - vt - vu) / 18 + v1 + v2;
     } else {
       variance = v0term / 18;
     }
@@ -7461,25 +7477,31 @@
         ysVal = tf.tensor2d(valY, [valY.length, 1]);
       }
 
+      var divergedAtEpoch = null;
       return nnModel.fit(xsSub, ysSub, {
         epochs: epochs,
-        // TF.js's own per-epoch shuffle uses Math.random, so switch it off when a seed is set
-        // (the rows were already shuffled by the seeded split above).
         shuffle: appSeedActive === null,
         validationData: [xsVal, ysVal],
         callbacks: {
           onEpochEnd: function(epoch, logs){
-            // A NaN or infinite loss means training has diverged (typically too high a learning rate, or too
-            // large a network for too little data) — stop immediately with a clear cause rather than run the
-            // remaining epochs on an already-broken model and silently show a nonsensical result at the end.
             if (!isFinite(logs.loss)){
-              throw new Error("Training diverged (loss became " + (isNaN(logs.loss) ? "NaN" : "infinite") + ") at epoch " + (epoch + 1) + " — try a lower learning rate, fewer layers/neurons, or more epochs at a gentler rate.");
+              // Signal divergence to the trainer via a flag and TF.js's own stopTraining, rather than
+              // throwing inside the callback — TF.js runs onEpochEnd inside its own async boundary, so a
+              // throw here is not reliably propagated to the promise chain and can leave the UI stuck
+              // on the spinner.
+              divergedAtEpoch = epoch + 1;
+              nnModel.stopTraining = true;
+              return;
             }
             if (onEpoch) onEpoch(epoch + 1, epochs, logs.loss, logs.val_loss);
             return tf.nextFrame();
           }
         }
       }).then(function(){
+        if (divergedAtEpoch !== null){
+          throw new Error("Training diverged (loss became NaN or infinite) at epoch " + divergedAtEpoch +
+            " — try a lower learning rate, fewer layers/neurons, or fewer epochs.");
+        }
         xsSub.dispose(); xsVal.dispose(); ysSub.dispose(); ysVal.dispose();
         return nnModel;
       }, function(err){
@@ -8550,7 +8572,9 @@
   function pivotEnumerateTables(rowSums, colSums, callback){
     var r = rowSums.length, c = colSums.length;
     var table = []; for (var i = 0; i < r; i++) table.push(new Array(c).fill(0));
-    var count = 0, MAX_TABLES = 300000, aborted = false;
+    // 300k was too slow in practice (~10-30s of frozen UI); the probability of any single table is also
+    // vanishingly small past this point, so no practical amount of accuracy is lost by bailing earlier.
+    var count = 0, MAX_TABLES = 50000, aborted = false;
     function fillRow(rowIdx, colRemaining){
       if (aborted) return;
       if (rowIdx === r - 1){
@@ -8596,19 +8620,23 @@
     return lp;
   }
 
-  function fisherFreemanHalton(table){
+   function fisherFreemanHalton(table){
     var rowSums = table.map(function(row){ return row.reduce(function(a, b){ return a + b; }, 0); });
     var colSums = new Array(table[0].length).fill(0);
     for (var i = 0; i < table.length; i++) for (var j = 0; j < table[0].length; j++) colSums[j] += table[i][j];
     var n = rowSums.reduce(function(a, b){ return a + b; }, 0);
     var logPobs = pivotLogTableProb(table, rowSums, colSums, n);
-    var pSum = 0;
+    var logSum = -Infinity;   // running log(Σ exp(lp)) over qualifying tables
     var result = pivotEnumerateTables(rowSums, colSums, function(t){
       var lp = pivotLogTableProb(t, rowSums, colSums, n);
-      if (lp <= logPobs + 1e-7) pSum += Math.exp(lp);
+      if (lp <= logPobs + 1e-7){
+        if (logSum === -Infinity) logSum = lp;
+        else if (lp > logSum) logSum = lp + Math.log1p(Math.exp(logSum - lp));
+        else logSum = logSum + Math.log1p(Math.exp(lp - logSum));
+      }
     });
     if (result.aborted) return { p: null, tooLarge: true };
-    return { p: Math.min(1, pSum), tooLarge: false };
+    return { p: Math.min(1, Math.exp(logSum)), tooLarge: false };
   }
 
   function cramersV(chi2, n, r, c){
