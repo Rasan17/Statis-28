@@ -161,6 +161,21 @@
     outline-offset:2px;
   }
 
+  .chart-dl-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+  .chart-dl-btn{
+    font-family:inherit;
+    font-size:11.5px;
+    font-weight:600;
+    color:var(--accent-ink);
+    background:var(--accent-soft);
+    border:1px solid transparent;
+    border-radius:6px;
+    padding:4px 9px;
+    cursor:pointer;
+  }
+  .chart-dl-btn:hover{filter:brightness(0.97);}
+  .chart-dl-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
   .table-wrap{overflow-x:auto;}
   table.ct{
     border-collapse:collapse;
@@ -2440,7 +2455,7 @@
     return { n: n, mean: m, sd: sd, se: se, df: df, tCrit: tCrit, ciLower: m - tCrit * se, ciUpper: m + tCrit * se };
   }
 
-  function renderBarChart(container, groups){
+  function renderBarChart(container, groups, filenameBase){
     var valid = groups.filter(function(g){ return !isNaN(g.stats.mean); });
     if (valid.length === 0){
       container.innerHTML = '<p class="norm-note">Each group needs at least 2 values to show means with a confidence interval.</p>';
@@ -2500,6 +2515,7 @@
 
     container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:' + Math.max(480, W) + 'px;height:auto;display:block;margin:0 auto;" role="img" aria-label="Bar chart of group means with 95% confidence intervals">' +
       yTicks + axes + bars + labels + '</svg>';
+    if (filenameBase) attachChartDownload(container, container.querySelector("svg"), filenameBase);
   }
 
   function quantile(sorted, p){
@@ -2570,8 +2586,15 @@
     return '<div><div class="norm-name" style="margin-bottom:8px;">' + escapeXml(name) + ' (n=' + n + ')</div>' + svg + '</div>';
   }
 
-  function renderHistograms(container, groups){
+  function renderHistograms(container, groups, filenamePrefix){
     container.innerHTML = groups.map(function(g){ return histogramSVG(g.arr, g.color, g.name); }).join("");
+    if (!filenamePrefix) return;
+    Array.prototype.forEach.call(container.children, function(wrap, i){
+      var svg = wrap.querySelector("svg");
+      if (!svg) return;
+      var safeName = String(groups[i].name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      attachChartDownload(wrap, svg, filenamePrefix + "-" + (safeName || (i + 1)));
+    });
   }
 
   function parseNumbers(text){
@@ -2906,7 +2929,7 @@
     renderHistograms(ttEls.histograms, [
       { name: labelA, arr: arrA, color: histColors[0] },
       { name: labelB, arr: arrB, color: histColors[1] }
-    ]);
+    ], "ttest-histogram");
 
     ttEls.warning.hidden = true;
 
@@ -2958,7 +2981,7 @@
       renderBarChart(ttEls.barChart, [
         { name: labelA, stats: groupMeanCI(arrA) },
         { name: labelB, stats: groupMeanCI(arrB) }
-      ]);
+      ], "ttest-means");
       ttEls.barChartCaption.textContent = "Bars show each side's mean; error bars show the 95% CI of the mean (t-distribution, df = n−1) — not the paired test's own CI on the mean difference.";
 
       if (chosenMethod === "wilcoxon"){
@@ -3008,7 +3031,7 @@
       renderBarChart(ttEls.barChart, [
         { name: labelA, stats: groupMeanCI(arrA) },
         { name: labelB, stats: groupMeanCI(arrB) }
-      ]);
+      ], "ttest-means");
       ttEls.barChartCaption.textContent = "Bars show each group's mean; error bars show the 95% CI of the mean (t-distribution, df = n−1).";
 
       if (chosenMethod === "mannwhitney"){
@@ -3422,6 +3445,7 @@
 
     container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="Scatter plot">' +
       axes + lineSvg + pts + xLabelSvg + yLabelSvg + '</svg>';
+    attachChartDownload(container, container.querySelector("svg"), "correlation-scatter");
   }
 
   function decideCorrelationMethod(shX, shY, linP){
@@ -4342,39 +4366,263 @@
     });
   }
 
+  /* ===================== Chart export engine (SVG / PNG) =====================
+     Every chart in the app is rendered as inline SVG whose colours reference CSS custom
+     properties (var(--ink), var(--line) ...). Those only resolve inside this page, so a raw
+     serialisation opened elsewhere loses its axes, text and colours. exportPrepareSvg() clones
+     the chart, resolves every var(--x) against the LIGHT theme palette (publication-friendly,
+     regardless of the on-screen theme), sets explicit width/height, paints a white background
+     and optionally appends an HTML legend (e.g. the KM or loss-curve legend) inside the image. */
+
+  var EXPORT_PNG_SCALE = 3;          // 3x the viewBox size ≈ print resolution for a single-column figure
+  var EXPORT_FONT_STACK = { "IBM Plex Sans": "IBM Plex Sans, Helvetica, Arial, sans-serif",
+                            "IBM Plex Mono": "IBM Plex Mono, Menlo, Consolas, monospace",
+                            "Fraunces": "Fraunces, Georgia, serif" };
+
+  function exportLightPalette(){
+    var root = document.documentElement;
+    var prev = root.getAttribute("data-theme");
+    root.setAttribute("data-theme", "light");
+    var cs = getComputedStyle(root), pal = {};
+    ["paper","surface","ink","ink-soft","line","accent","accent-soft","accent-ink","accent2","accent2-soft",
+     "accent3","accent4","good","good-soft","warn","warn-soft","neutral","neutral-soft"].forEach(function(k){
+      pal[k] = cs.getPropertyValue("--" + k).trim();
+    });
+    if (prev === null) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", prev);
+    // Colours baked in at render time from the dark palette (e.g. bar-chart fills) are mapped back.
+    var dark = {};
+    if (prev !== "light"){
+      var cs2 = getComputedStyle(root);
+      Object.keys(pal).forEach(function(k){
+        var v = cs2.getPropertyValue("--" + k).trim();
+        if (v && v.toLowerCase() !== pal[k].toLowerCase()) dark[v.toLowerCase()] = pal[k];
+      });
+    }
+    return { vars: pal, darkToLight: dark };
+  }
+
+  function exportResolveString(str, palette){
+    if (!str) return str;
+    var out = str.replace(/var\(\s*--([a-z0-9-]+)\s*(?:,\s*([^)]+))?\)/gi, function(m, name, fallback){
+      return palette.vars[name] || (fallback ? fallback.trim() : "#000");
+    });
+    if (palette.darkToLight){
+      out = out.replace(/#[0-9a-f]{6}\b/gi, function(hex){ return palette.darkToLight[hex.toLowerCase()] || hex; });
+    }
+    return out;
+  }
+
+  function exportSvgDims(svg){
+    var vb = svg.viewBox && svg.viewBox.baseVal;
+    var w = (vb && vb.width) || svg.clientWidth || 480;
+    var h = (vb && vb.height) || svg.clientHeight || 320;
+    return { w: w, h: h, x: (vb && vb.x) || 0, y: (vb && vb.y) || 0 };
+  }
+
+  // legendItems: [{ color, label, dash }]
+  function exportPrepareSvg(svg, opts){
+    opts = opts || {};
+    var palette = exportLightPalette();
+    var clone = svg.cloneNode(true);
+    var d = exportSvgDims(svg);
+    var extraH = 0;
+    var legendItems = opts.legendItems || (opts.legendEl ? exportReadHtmlLegend(opts.legendEl) : []);
+
+    clone.removeAttribute("id");
+    clone.removeAttribute("style");
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+
+    [clone].concat(Array.prototype.slice.call(clone.querySelectorAll("*"))).forEach(function(el){
+      Array.prototype.slice.call(el.attributes).forEach(function(a){
+        if (a.value.indexOf("var(") !== -1 || /#[0-9a-f]{6}/i.test(a.value)){
+          el.setAttribute(a.name, exportResolveString(a.value, palette));
+        }
+      });
+      var ff = el.getAttribute("font-family");
+      if (ff){
+        var first = ff.split(",")[0].trim().replace(/["']/g, "");
+        if (EXPORT_FONT_STACK[first]) el.setAttribute("font-family", EXPORT_FONT_STACK[first]);
+      }
+    });
+
+    var ns = "http://www.w3.org/2000/svg";
+    if (legendItems.length){
+      // Lay legend entries out in rows that fit the chart width.
+      var x = 14, rowY = d.h + 18, rowH = 20, g = document.createElementNS(ns, "g");
+      legendItems.forEach(function(item){
+        var labelW = Math.min(360, item.label.length * 6.4) + 36;
+        if (x + labelW > d.w - 8 && x > 14){ x = 14; rowY += rowH; }
+        var line = document.createElementNS(ns, "line");
+        line.setAttribute("x1", x); line.setAttribute("x2", x + 18);
+        line.setAttribute("y1", rowY - 4); line.setAttribute("y2", rowY - 4);
+        line.setAttribute("stroke", exportResolveString(item.color, palette));
+        line.setAttribute("stroke-width", "3");
+        if (item.dash) line.setAttribute("stroke-dasharray", item.dash);
+        var t = document.createElementNS(ns, "text");
+        t.setAttribute("x", x + 24); t.setAttribute("y", rowY);
+        t.setAttribute("font-size", "11.5");
+        t.setAttribute("font-family", EXPORT_FONT_STACK["IBM Plex Sans"]);
+        t.setAttribute("fill", palette.vars["ink-soft"]);
+        t.textContent = item.label;
+        g.appendChild(line); g.appendChild(t);
+        x += labelW + 14;
+      });
+      clone.appendChild(g);
+      extraH = rowY - d.h + 12;
+    }
+
+    var totalH = d.h + extraH;
+    clone.setAttribute("viewBox", d.x + " " + d.y + " " + d.w + " " + totalH);
+    clone.setAttribute("width", d.w);
+    clone.setAttribute("height", totalH);
+
+    var bg = document.createElementNS(ns, "rect");
+    bg.setAttribute("x", d.x); bg.setAttribute("y", d.y);
+    bg.setAttribute("width", d.w); bg.setAttribute("height", totalH);
+    bg.setAttribute("fill", "#FFFFFF");
+    clone.insertBefore(bg, clone.firstChild);
+
+    return { svg: clone, width: d.w, height: totalH };
+  }
+
+  function exportReadHtmlLegend(legendEl){
+    if (!legendEl || legendEl.hidden) return [];
+    return Array.prototype.map.call(legendEl.querySelectorAll(".legend-item"), function(it){
+      var sw = it.querySelector(".legend-swatch");
+      var raw = sw ? (sw.getAttribute("style") || "") : "";
+      var m = raw.match(/background(?:-color)?\s*:\s*([^;]+)/i);
+      var color = m ? m[1].trim() : (sw ? getComputedStyle(sw).backgroundColor : "#555");
+      return { color: color, label: it.textContent.trim(), dash: sw && sw.getAttribute("data-dash") || null };
+    }).filter(function(x){ return x.label; });
+  }
+
+  function exportSerialize(prepared){
+    return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' + new XMLSerializer().serializeToString(prepared.svg);
+  }
+
+  function exportResolveSource(src){ return typeof src === "function" ? src() : src; }
+
+  function downloadSvgElement(svgSrc, filename, btn, opts){
+    var svg = exportResolveSource(svgSrc);
+    if (!svg) return;
+    var prepared = exportPrepareSvg(svg, opts);
+    saveFile(filename, new Blob([exportSerialize(prepared)], { type: "image/svg+xml;charset=utf-8;" }), btn);
+  }
+
+  function downloadSvgAsPng(svgSrc, filename, btn, opts){
+    var svg = exportResolveSource(svgSrc);
+    if (!svg) return;
+    var prepared = exportPrepareSvg(svg, opts);
+    var url = URL.createObjectURL(new Blob([exportSerialize(prepared)], { type: "image/svg+xml;charset=utf-8;" }));
+    var img = new Image();
+    img.onload = function(){
+      var s = EXPORT_PNG_SCALE;
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.round(prepared.width * s); canvas.height = Math.round(prepared.height * s);
+      var ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(function(blob){ saveFile(filename, blob, btn); }, "image/png");
+    };
+    img.onerror = function(){
+      URL.revokeObjectURL(url);
+      if (btn){ var o = btn.textContent; btn.textContent = "Couldn't render"; setTimeout(function(){ btn.textContent = o; }, 2200); }
+    };
+    img.src = url;
+  }
+
+  // Injects a compact "Download SVG / Download PNG" control into mountEl. `svg` may be an SVG
+  // element or a function returning one (used for HTML-rendered visuals such as the confusion
+  // matrix, where a dedicated export SVG is built from the data on demand). Any control left over
+  // from a previous render is replaced, since charts are fully re-rendered on every input change.
+  function attachChartDownload(mountEl, svg, baseFilename, opts){
+    var old = mountEl.querySelector(":scope > .chart-dl-row");
+    if (old) old.remove();
+    if (!svg) return;
+    var row = document.createElement("div");
+    row.className = "chart-dl-row";
+    var svgBtn = document.createElement("button");
+    svgBtn.className = "chart-dl-btn"; svgBtn.type = "button"; svgBtn.textContent = "Download SVG";
+    var pngBtn = document.createElement("button");
+    pngBtn.className = "chart-dl-btn"; pngBtn.type = "button"; pngBtn.textContent = "Download PNG";
+    svgBtn.addEventListener("click", function(){ downloadSvgElement(svg, baseFilename + ".svg", svgBtn, opts); });
+    pngBtn.addEventListener("click", function(){ downloadSvgAsPng(svg, baseFilename + ".png", pngBtn, opts); });
+    row.appendChild(svgBtn); row.appendChild(pngBtn);
+    mountEl.appendChild(row);
+  }
+
+  /* --- Export-only SVG builders for visuals that are drawn with HTML on screen --- */
+
+  function exportSvgFromString(markup){
+    var holder = document.createElement("div");
+    holder.innerHTML = markup;
+    return holder.querySelector("svg");
+  }
+
+  // rows: [{ label, value, valueText, highlight }]
+  function buildHorizontalBarSvg(title, rows, opts){
+    opts = opts || {};
+    var W = 560, labelW = 150, valueW = 70, rowH = 22, mT = title ? 34 : 12, mB = 14;
+    var H = mT + rows.length * rowH + mB;
+    var maxV = Math.max.apply(null, rows.map(function(r){ return Math.max(0, r.value); })) || 1;
+    var trackW = W - labelW - valueW - 24;
+    var parts = [];
+    if (title) parts.push('<text x="12" y="20" font-size="12.5" font-weight="600" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(title) + '</text>');
+    rows.forEach(function(r, i){
+      var y = mT + i * rowH;
+      var lab = String(r.label); if (lab.length > 24) lab = lab.slice(0, 23) + "…";
+      var bw = Math.max(0, r.value) / maxV * trackW;
+      parts.push('<text x="' + (labelW + 4) + '" y="' + (y + 14) + '" text-anchor="end" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(lab) + '</text>');
+      parts.push('<rect x="' + (labelW + 12) + '" y="' + (y + 4) + '" width="' + trackW + '" height="13" rx="3" fill="var(--neutral-soft)"/>');
+      parts.push('<rect x="' + (labelW + 12) + '" y="' + (y + 4) + '" width="' + bw.toFixed(1) + '" height="13" rx="3" fill="' + (r.highlight ? "var(--accent2)" : (opts.color || "var(--accent)")) + '"/>');
+      parts.push('<text x="' + (labelW + 20 + trackW) + '" y="' + (y + 14) + '" font-size="11" fill="var(--ink)" font-family="IBM Plex Mono, monospace">' + escapeXml(r.valueText != null ? String(r.valueText) : String(r.value)) + '</text>');
+    });
+    return exportSvgFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '">' + parts.join("") + '</svg>');
+  }
+
+  function buildConfusionMatrixSvg(cm, categories){
+    var k = categories.length, cell = Math.max(46, Math.min(80, 420 / k));
+    var labW = 120, mT = 58, mL = labW + 34;
+    var W = mL + k * cell + 20, H = mT + k * cell + 20;
+    var maxVal = Math.max.apply(null, cm.map(function(row){ return Math.max.apply(null, row); }));
+    var p = [];
+    function trunc(s){ s = String(s); return s.length > 14 ? s.slice(0, 13) + "…" : s; }
+    p.push('<text x="' + (mL + k * cell / 2) + '" y="16" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">Predicted</text>');
+    p.push('<text x="14" y="' + (mT + k * cell / 2) + '" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif" transform="rotate(-90 14 ' + (mT + k * cell / 2) + ')">Actual</text>');
+    categories.forEach(function(c, j){
+      p.push('<text x="' + (mL + j * cell + cell / 2) + '" y="' + (mT - 10) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(trunc(c)) + '</text>');
+      p.push('<text x="' + (mL - 8) + '" y="' + (mT + j * cell + cell / 2 + 4) + '" text-anchor="end" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(trunc(c)) + '</text>');
+    });
+    cm.forEach(function(row, i){
+      row.forEach(function(val, j){
+        var alpha = maxVal > 0 ? (0.12 + 0.75 * (val / maxVal)) : 0.12;
+        var rgb = i === j ? "31,110,92" : "156,107,18";
+        var x = mL + j * cell, y = mT + i * cell;
+        p.push('<rect x="' + x + '" y="' + y + '" width="' + cell + '" height="' + cell + '" fill="rgb(' + rgb + ')" fill-opacity="' + alpha.toFixed(2) + '" stroke="#FFFFFF" stroke-width="2"/>');
+        p.push('<text x="' + (x + cell / 2) + '" y="' + (y + cell / 2 + 6) + '" text-anchor="middle" font-size="16" font-weight="700" fill="' + (alpha > 0.55 ? "#FFFFFF" : "var(--ink)") + '" font-family="IBM Plex Mono, monospace">' + val + '</text>');
+      });
+    });
+    return exportSvgFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '">' + p.join("") + '</svg>');
+  }
+
   survEls.exportCsvBtn.addEventListener("click", function(){
     var csv = survivalLifeTableCSV();
     if (!csv) return;
     saveFile("kaplan-meier-life-table.csv", new Blob([csv], { type: "text/csv;charset=utf-8;" }), survEls.exportCsvBtn);
   });
 
+  function kmExportFilename(ext){
+    var t = (survEls.chartTitleInput && survEls.chartTitleInput.value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+    return (t ? t : "kaplan-meier-plot") + "." + ext;
+  }
   survEls.exportSvgBtn.addEventListener("click", function(){
-    var svg = survEls.plotContainer.querySelector("svg");
-    if (!svg) return;
-    var xml = new XMLSerializer().serializeToString(svg);
-    saveFile("kaplan-meier-plot.svg", new Blob([xml], { type: "image/svg+xml;charset=utf-8;" }), survEls.exportSvgBtn);
+    downloadSvgElement(survEls.plotContainer.querySelector("svg"), kmExportFilename("svg"), survEls.exportSvgBtn, { legendEl: survEls.legend });
   });
 
   survEls.exportPngBtn.addEventListener("click", function(){
-    var svg = survEls.plotContainer.querySelector("svg");
-    if (!svg) return;
-    var xml = new XMLSerializer().serializeToString(svg);
-    var svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8;" });
-    var url = URL.createObjectURL(svgBlob);
-    var img = new Image();
-    img.onload = function(){
-      var vb = svg.viewBox.baseVal;
-      var scaleFactor = 2;
-      var canvas = document.createElement("canvas");
-      canvas.width = vb.width * scaleFactor; canvas.height = vb.height * scaleFactor;
-      var ctx = canvas.getContext("2d");
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(function(blob){ saveFile("kaplan-meier-plot.png", blob, survEls.exportPngBtn); });
-    };
-    img.src = url;
+    downloadSvgAsPng(survEls.plotContainer.querySelector("svg"), kmExportFilename("png"), survEls.exportPngBtn, { legendEl: survEls.legend });
   });
 
   survEls.exportPrintBtn.addEventListener("click", function(){ window.print(); });
@@ -4814,8 +5062,8 @@
     var lev = leveneKGroup(rawArrays);
     renderLeveneKGroup(lev, names, groups.map(function(g){ return g.arr.length; }));
 
-    renderBarChart(anovaEls.barChart, groups.map(function(g){ return { name: g.name, stats: groupMeanCI(g.arr) }; }));
-    renderHistograms(anovaEls.histograms, groups.map(function(g, i){ return { name: g.name, arr: g.arr, color: colors[i % colors.length] }; }));
+    renderBarChart(anovaEls.barChart, groups.map(function(g){ return { name: g.name, stats: groupMeanCI(g.arr) }; }), "anova-means");
+    renderHistograms(anovaEls.histograms, groups.map(function(g, i){ return { name: g.name, arr: g.arr, color: colors[i % colors.length] }; }), "anova-histogram");
 
     var warnings = [];
     groups.forEach(function(g){
@@ -5133,6 +5381,7 @@
 
     container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="Fitted regression curve">' +
       yTicks + axes + pts + curveSvg + xTicks + xLabelSvg + yLabelSvg + '</svg>';
+    attachChartDownload(container, container.querySelector("svg"), "glm-fitted-curve");
   }
 
   var glmEls = {
@@ -6137,45 +6386,17 @@
   });
 
   document.getElementById("metaForestSvgBtn").addEventListener("click", function(){
-    var svg = metaEls.forestPlot.querySelector("svg");
-    if (!svg) return;
-    var xml = new XMLSerializer().serializeToString(svg);
-    saveFile("meta-analysis-forest-plot.svg", new Blob([xml], { type: "image/svg+xml;charset=utf-8;" }), document.getElementById("metaForestSvgBtn"));
+    downloadSvgElement(metaEls.forestPlot.querySelector("svg"), "meta-analysis-forest-plot.svg", document.getElementById("metaForestSvgBtn"));
   });
   document.getElementById("metaForestPngBtn").addEventListener("click", function(){
-    metaSvgToPng(metaEls.forestPlot, "meta-analysis-forest-plot.png", document.getElementById("metaForestPngBtn"));
+    downloadSvgAsPng(metaEls.forestPlot.querySelector("svg"), "meta-analysis-forest-plot.png", document.getElementById("metaForestPngBtn"));
   });
   document.getElementById("metaFunnelSvgBtn").addEventListener("click", function(){
-    var svg = metaEls.funnelPlot.querySelector("svg");
-    if (!svg) return;
-    var xml = new XMLSerializer().serializeToString(svg);
-    saveFile("meta-analysis-funnel-plot.svg", new Blob([xml], { type: "image/svg+xml;charset=utf-8;" }), document.getElementById("metaFunnelSvgBtn"));
+    downloadSvgElement(metaEls.funnelPlot.querySelector("svg"), "meta-analysis-funnel-plot.svg", document.getElementById("metaFunnelSvgBtn"));
   });
   document.getElementById("metaFunnelPngBtn").addEventListener("click", function(){
-    metaSvgToPng(metaEls.funnelPlot, "meta-analysis-funnel-plot.png", document.getElementById("metaFunnelPngBtn"));
+    downloadSvgAsPng(metaEls.funnelPlot.querySelector("svg"), "meta-analysis-funnel-plot.png", document.getElementById("metaFunnelPngBtn"));
   });
-
-  function metaSvgToPng(container, filename, btn){
-    var svg = container.querySelector("svg");
-    if (!svg) return;
-    var xml = new XMLSerializer().serializeToString(svg);
-    var svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8;" });
-    var url = URL.createObjectURL(svgBlob);
-    var img = new Image();
-    img.onload = function(){
-      var vb = svg.viewBox.baseVal;
-      var scaleFactor = 2;
-      var canvas = document.createElement("canvas");
-      canvas.width = vb.width * scaleFactor; canvas.height = vb.height * scaleFactor;
-      var ctx = canvas.getContext("2d");
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(function(blob){ saveFile(filename, blob, btn); });
-    };
-    img.src = url;
-  }
 
   renderMetaTable();
   updateMetaBadge();
@@ -7088,7 +7309,7 @@
 
   /* --- Plot rendering --- */
 
-  function mlRenderLineChart(container, series, xLabel, yLabel){
+  function mlRenderLineChart(container, series, xLabel, yLabel, filenameBase){
     var W = 560, H = 260, mL = 50, mR = 16, mT = 16, mB = 38;
     var allX = [], allY = [];
     series.forEach(function(s){ s.points.forEach(function(p){ allX.push(p.x); allY.push(p.y); }); });
@@ -7119,6 +7340,8 @@
     svg.push('<text x="' + ((mL + W - mR) / 2) + '" y="' + (H - mB + 32) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(xLabel) + '</text>');
     svg.push('<text x="14" y="' + ((mT + H - mB) / 2) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif" transform="rotate(-90 14 ' + ((mT + H - mB) / 2) + ')">' + escapeXml(yLabel) + '</text>');
     container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="' + escapeXml(yLabel) + ' chart">' + svg.join("") + '</svg>';
+    if (filenameBase) attachChartDownload(container, container.querySelector("svg"), filenameBase,
+      container === mlEls.lossPlot ? { legendEl: mlEls.lossLegend } : undefined);
   }
 
   function mlRenderScatterChart(container, points, xLabel, yLabel, diagonal){
@@ -7145,6 +7368,7 @@
     svg.push('<text x="' + ((mL + W - mR) / 2) + '" y="' + (H - mB + 32) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(xLabel) + '</text>');
     svg.push('<text x="14" y="' + ((mT + H - mB) / 2) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif" transform="rotate(-90 14 ' + ((mT + H - mB) / 2) + ')">' + escapeXml(yLabel) + '</text>');
     container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="Actual vs predicted scatter">' + svg.join("") + '</svg>';
+    attachChartDownload(container, container.querySelector("svg"), "ml-actual-vs-predicted");
   }
 
   function mlRenderConfusionMatrix(cm, categories){
@@ -7258,10 +7482,10 @@
         mlRenderLineChart(mlEls.lossPlot, [
           { points: mlLossHistory.map(function(h){ return { x: h.epoch, y: h.trainLoss }; }), color: "var(--accent)" },
           { points: mlLossHistory.map(function(h){ return { x: h.epoch, y: h.valLoss }; }), color: "var(--accent2)", dash: "4,3" }
-        ], "Epoch", "Loss");
+        ], "Epoch", "Loss", "ml-training-loss");
         mlEls.lossLegend.innerHTML =
           '<span class="legend-item"><span class="legend-swatch" style="background:var(--accent);"></span>Training loss</span>' +
-          '<span class="legend-item"><span class="legend-swatch" style="background:var(--accent2);"></span>Validation loss</span>';
+          '<span class="legend-item"><span class="legend-swatch" data-dash="4,3" style="background:var(--accent2);"></span>Validation loss</span>';
       }).then(function(nnModel){ return { kind: "nn", data: nnModel }; });
     }
 
@@ -7324,6 +7548,9 @@
     mlEls.recall.textContent = fmtNum(cmetrics.recall * 100, 1) + "%";
     mlEls.f1.textContent = fmtNum(cmetrics.f1 * 100, 1) + "%";
     mlEls.confusionMatrix.innerHTML = mlRenderConfusionMatrix(cmetrics.confusionMatrix, mlState.targetMeta.categories);
+    (function(cm, cats){
+      attachChartDownload(mlEls.confusionMatrix, function(){ return buildConfusionMatrixSvg(cm, cats); }, "ml-confusion-matrix");
+    })(cmetrics.confusionMatrix, mlState.targetMeta.categories.slice());
 
     if (task === "binary"){
       mlEls.rocSection.hidden = false;
@@ -7332,7 +7559,7 @@
       mlRenderLineChart(mlEls.rocPlot, [
         { points: roc.points.map(function(p){ return { x: p.fpr, y: p.tpr }; }), color: "var(--accent)" },
         { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], color: "var(--ink-soft)", dash: "4,3" }
-      ], "False positive rate", "True positive rate");
+      ], "False positive rate", "True positive rate", "ml-roc-curve");
       mlEls.rocNote.textContent = "The dashed diagonal is a no-discrimination baseline (AUC = 0.5); AUC = 1.0 is a perfect classifier.";
     } else {
       mlEls.rocSection.hidden = true;
@@ -7792,7 +8019,7 @@
     return '<tr><td>' + escapeXml(label) + '</td><td>' + value + '</td></tr>';
   }
 
-  function pivotRenderMiniHistogram(container, sorted){
+  function pivotRenderMiniHistogram(container, sorted, varName){
     container.innerHTML = "";
     if (sorted.length < 2) return;
     var lo0 = sorted[0], hi0 = sorted[sorted.length - 1];
@@ -7817,9 +8044,21 @@
         '<span class="pivot-bar-value">' + count + '</span></div>';
     });
     container.innerHTML = html;
+    var exportRows = bins.map(function(count, i){
+      var binLo = lo0 + i * binWidth;
+      return { label: fmtNum(binLo, 1) + "–" + fmtNum(binLo + binWidth, 1), value: count, valueText: count };
+    });
+    attachChartDownload(container, function(){
+      return buildHorizontalBarSvg("Distribution" + (varName ? " of " + varName : ""), exportRows);
+    }, "pivot-distribution" + pivotSafeName(varName));
   }
 
-  function pivotRenderMiniBars(container, freqRows){
+  function pivotSafeName(n){
+    var s = String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+    return s ? "-" + s : "";
+  }
+
+  function pivotRenderMiniBars(container, freqRows, varName){
     container.innerHTML = "";
     if (freqRows.length === 0) return;
     var maxCount = Math.max.apply(null, freqRows.map(function(r){ return r.count; }));
@@ -7831,6 +8070,10 @@
         '<span class="pivot-bar-value">' + r.count + '</span></div>';
     });
     container.innerHTML = html;
+    var exportRows = freqRows.map(function(r){ return { label: r.category, value: r.count, valueText: r.count }; });
+    attachChartDownload(container, function(){
+      return buildHorizontalBarSvg("Frequency" + (varName ? " of " + varName : ""), exportRows);
+    }, "pivot-frequency" + pivotSafeName(varName));
   }
 
   function pivotRenderSingleVarSummary(){
@@ -7863,7 +8106,7 @@
       var chartDiv = document.createElement("div");
       chartDiv.className = "pivot-mini-chart";
       pivotEls.singleVarOutput.appendChild(chartDiv);
-      pivotRenderMiniHistogram(chartDiv, s.sorted);
+      pivotRenderMiniHistogram(chartDiv, s.sorted, col);
     } else {
       var f = pivotFrequencyStats(values, type === "ordinal");
       var html2 = '<div class="qc-grid">' +
@@ -7882,7 +8125,7 @@
       var chartDiv2 = document.createElement("div");
       chartDiv2.className = "pivot-mini-chart";
       pivotEls.singleVarOutput.appendChild(chartDiv2);
-      pivotRenderMiniBars(chartDiv2, f.rows);
+      pivotRenderMiniBars(chartDiv2, f.rows, col);
     }
   }
 
@@ -8942,6 +9185,11 @@
         '<span class="pivot-bar-value">' + fmtNum(s.silhouette, 3) + '</span></div>';
     });
     unsEls.silhouetteChart.innerHTML = html;
+    attachChartDownload(unsEls.silhouetteChart, function(){
+      return buildHorizontalBarSvg("Silhouette score by number of groups", scores.map(function(s){
+        return { label: "k = " + s.k + (s.k === bestK ? " ★" : ""), value: s.silhouette, valueText: fmtNum(s.silhouette, 3), highlight: s.k === bestK };
+      }));
+    }, "cluster-silhouette-scores");
   }
 
   unsEls.kSlider.addEventListener("input", function(){ unsEls.kValue.textContent = unsEls.kSlider.value; });
@@ -9169,6 +9417,7 @@
     svg.push('<text x="' + ((mL + W - mR) / 2) + '" y="' + (H - mB + 32) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif">' + escapeXml(xCol) + '</text>');
     svg.push('<text x="14" y="' + ((mT + H - mB) / 2) + '" text-anchor="middle" font-size="11" fill="var(--ink-soft)" font-family="IBM Plex Sans, sans-serif" transform="rotate(-90 14 ' + ((mT + H - mB) / 2) + ')">' + escapeXml(yCol) + '</text>');
     unsEls.scatterPlot.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="Cluster scatter plot">' + svg.join("") + '</svg>';
+    attachChartDownload(unsEls.scatterPlot, unsEls.scatterPlot.querySelector("svg"), "cluster-scatter");
   }
 
   /* --- Playground: assign a new point --- */
@@ -9312,3 +9561,4 @@
   recalcRegression();
 })();
 </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79","spa":2}' crossorigin="anonymous"></script>
